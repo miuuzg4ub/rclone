@@ -521,9 +521,17 @@ type accountWriteTo struct {
 func (awt *accountWriteTo) Write(p []byte) (n int, err error) {
 	bytesUntilLimit, err := awt.acc.checkReadBefore()
 	if err == nil {
+		// Truncate the write to the transfer limit
+		truncated := int64(len(p)) > bytesUntilLimit
+		if truncated {
+			p = p[:bytesUntilLimit]
+		}
 		n, err = awt.w.Write(p)
 		n, err = awt.acc.checkReadAfter(bytesUntilLimit, n, err)
 		awt.acc.accountRead(n)
+		if truncated && err == nil {
+			err = ErrorMaxTransferLimitReachedFatal
+		}
 	}
 	return n, err
 }
@@ -531,10 +539,14 @@ func (awt *accountWriteTo) Write(p []byte) (n int, err error) {
 // WriteTo writes data to w until there's no more data to write or
 // when an error occurs. The return value n is the number of bytes
 // written. Any error encountered during the write is also returned.
+//
+// acc.mu is held for the whole transfer, as it is for Read, so that
+// Close and UpdateReader can't run while the underlying reader is in
+// use.
 func (acc *Account) WriteTo(w io.Writer) (n int64, err error) {
 	acc.mu.Lock()
+	defer acc.mu.Unlock()
 	in := acc.in
-	acc.mu.Unlock()
 	wrappedWriter := accountWriteTo{w: w, acc: acc}
 	if do, ok := in.(io.WriterTo); ok {
 		n, err = do.WriteTo(&wrappedWriter)
